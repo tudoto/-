@@ -28,6 +28,16 @@ export const AVATARS = ["🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", 
 export const ROUND_TIME = 60; // Seconds
 export const MAX_ROUNDS = 3;
 
+// PeerJS Configuration with STUN servers for better NAT traversal
+export const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' }
+    ]
+  }
+};
+
 export const HAND_BASE_SCORES: Record<HandType, { chips: number, mult: number }> = {
   [HandType.HighCard]: { chips: 5, mult: 1 },
   [HandType.Pair]: { chips: 10, mult: 2 },

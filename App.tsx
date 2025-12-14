@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 import { v4 as uuidv4 } from 'uuid';
 import { GameState, Player, ChatMessage, GamePhase, NetworkMessage, DrawPath } from './types';
-import { WORD_LIST, AVATARS, ROUND_TIME, MAX_ROUNDS } from './constants';
+import { WORD_LIST, AVATARS, ROUND_TIME, MAX_ROUNDS, PEER_CONFIG } from './constants';
 import GameCanvas from './components/GameCanvas';
 import { Users, Send, Copy, Crown, Timer, AlertCircle, Play, LogOut, CheckCircle2 } from 'lucide-react';
 
@@ -40,6 +40,7 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
   const [chatInput, setChatInput] = useState('');
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Derived State
   const isHost = gameState.players.find(p => p.id === myId)?.isHost || false;
@@ -345,6 +346,7 @@ export default function App() {
     setMyAvatar(AVATARS[Math.floor(Math.random() * AVATARS.length)]);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
       if (peerRef.current) peerRef.current.destroy();
     };
   }, []);
@@ -355,7 +357,7 @@ export default function App() {
       return;
     }
     
-    // Destroy previous instance if exists to prevent 'unavailable id'
+    // Destroy previous instance
     if (peerRef.current) {
         peerRef.current.destroy();
     }
@@ -363,14 +365,13 @@ export default function App() {
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
     
-    // Let PeerJS assign a random ID. Do not pass myId.
-    const peer = new Peer(); 
+    // Use Config with STUN servers
+    const peer = new Peer(PEER_CONFIG); 
     
     peer.on('open', (id) => {
       setConnectionStatus('CONNECTED');
-      setMyId(id); // Capture the assigned ID
+      setMyId(id); 
       
-      // Initialize Host State with the assigned ID
       setGameState({
         ...INITIAL_STATE,
         roomId: id,
@@ -390,7 +391,6 @@ export default function App() {
       conn.on('data', (data) => handleData(data, conn.peer));
       conn.on('open', () => {
         connectionsRef.current.set(conn.peer, conn);
-        // Important: Use function update to get latest state inside callback
         setGameState(current => {
            conn.send({ type: 'UPDATE_STATE', payload: current });
            return current;
@@ -404,12 +404,19 @@ export default function App() {
         }));
       });
     });
+
+    peer.on('error', (err) => {
+        console.error("Peer Error", err);
+        setErrorMsg("网络错误: " + err.type);
+        setConnectionStatus('DISCONNECTED');
+    });
     
     peerRef.current = peer;
   };
 
   const joinRoom = () => {
-     if (!myName.trim() || !inputRoomId.trim()) {
+    const targetRoomId = inputRoomId.trim();
+     if (!myName.trim() || !targetRoomId) {
       setErrorMsg("请输入昵称和房间号");
       return;
     }
@@ -421,41 +428,64 @@ export default function App() {
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
 
-    // Let PeerJS assign a random ID
-    const peer = new Peer();
+    // 1. Setup Timeout
+    if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+    connectionTimeoutRef.current = setTimeout(() => {
+        setConnectionStatus(prev => {
+            if (prev === 'CONNECTING') {
+                if (peerRef.current) peerRef.current.destroy();
+                setErrorMsg("连接超时。请检查房间号是否正确，或由于网络原因无法连接主机。");
+                return 'DISCONNECTED';
+            }
+            return prev;
+        });
+    }, 10000); // 10s Timeout
+
+    // 2. Init Peer with STUN config
+    const peer = new Peer(PEER_CONFIG);
     
     peer.on('open', (id) => {
-      setMyId(id); // Capture assigned ID
+      setMyId(id); 
       
-      const conn = peer.connect(inputRoomId);
+      const conn = peer.connect(targetRoomId);
       
       conn.on('open', () => {
-        setConnectionStatus('CONNECTED');
-        connectionsRef.current.set(inputRoomId, conn);
+        // Success! Clear timeout
+        if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
         
-        // Send Join Request with my new assigned ID
+        setConnectionStatus('CONNECTED');
+        connectionsRef.current.set(targetRoomId, conn);
+        
         conn.send({
           type: 'JOIN',
           payload: { id: id, name: myName, avatar: myAvatar }
         });
       });
 
-      conn.on('data', (data) => handleData(data, inputRoomId));
+      conn.on('data', (data) => handleData(data, targetRoomId));
       
       conn.on('close', () => {
         setConnectionStatus('DISCONNECTED');
-        setErrorMsg("Host disconnected");
+        setErrorMsg("与房主断开连接");
       });
       
       conn.on('error', (err) => {
-         console.error(err);
-         setErrorMsg("Connection error");
+         console.error("Connection Error", err);
+         if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+         setErrorMsg("连接失败");
          setConnectionStatus('DISCONNECTED');
       });
     });
     
     peer.on('error', (err) => {
-      setErrorMsg("Peer Error: " + err.type);
+      console.error("Peer Error", err);
+      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+      
+      let msg = "连接错误: " + err.type;
+      if (err.type === 'peer-unavailable') {
+          msg = "找不到房间 ID: " + targetRoomId;
+      }
+      setErrorMsg(msg);
       setConnectionStatus('DISCONNECTED');
     });
 
@@ -591,6 +621,7 @@ export default function App() {
          <div className="animate-pulse flex flex-col items-center">
             <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
             <p className="text-xl">连接中...</p>
+            <p className="text-sm text-slate-400 mt-2">首次连接可能需要几秒钟建立通道</p>
          </div>
       </div>
     );
