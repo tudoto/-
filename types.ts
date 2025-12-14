@@ -8,6 +8,7 @@ export interface Player {
   avatar: string; // Emoji
   hasGuessedCorrectly: boolean;
   isConnected: boolean;
+  isNPC?: boolean; // New flag for bots
 }
 
 export interface DrawPoint {

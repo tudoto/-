@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 import { v4 as uuidv4 } from 'uuid';
 import { GameState, Player, ChatMessage, GamePhase, NetworkMessage, DrawPath } from './types';
-import { WORD_LIST, AVATARS, ROUND_TIME, MAX_ROUNDS, PEER_CONFIG } from './constants';
+import { WORD_LIST, AVATARS, ROUND_TIME, MAX_ROUNDS, PEER_CONFIG, ROOM_ID_PREFIX } from './constants';
 import GameCanvas from './components/GameCanvas';
-import { Users, Send, Copy, Crown, Timer, AlertCircle, Play, LogOut, CheckCircle2 } from 'lucide-react';
+import { Users, Send, Copy, Crown, Timer, AlertCircle, Play, LogOut, CheckCircle2, Bot, FastForward, Plus } from 'lucide-react';
 
 // --- INITIAL STATE ---
 const INITIAL_STATE: GameState = {
@@ -23,12 +23,18 @@ const INITIAL_STATE: GameState = {
   winnerId: null,
 };
 
+// Helper to generate short 6-character ID
+const generateShortId = () => {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+};
+
 export default function App() {
   // Local User State
   const [myId, setMyId] = useState('');
   const [myName, setMyName] = useState('');
   const [myAvatar, setMyAvatar] = useState(AVATARS[0]);
   const [inputRoomId, setInputRoomId] = useState('');
+  const [displayRoomId, setDisplayRoomId] = useState(''); // Short code for display
   
   // Network State
   const peerRef = useRef<Peer | null>(null);
@@ -186,7 +192,7 @@ export default function App() {
         };
         
         // Check if all guessers have guessed
-        const guessers = updatedPlayers.filter(p => p.id !== prev.currentDrawerId && p.isConnected);
+        const guessers = updatedPlayers.filter(p => p.id !== prev.currentDrawerId && p.isConnected && !p.isNPC); // NPCs don't guess
         const allGuessed = guessers.length > 0 && guessers.every(p => p.hasGuessedCorrectly);
         
         if (allGuessed) {
@@ -217,6 +223,66 @@ export default function App() {
     }
   };
 
+  const addNPC = () => {
+    if (!isHost) return;
+    const npcId = uuidv4();
+    const npcName = `机器人 ${Math.floor(Math.random() * 99) + 1}号`;
+    
+    setGameState(prev => {
+       const newNPC: Player = {
+          id: npcId,
+          name: npcName,
+          avatar: '🤖',
+          score: 0,
+          isHost: false,
+          hasGuessedCorrectly: false,
+          isConnected: true,
+          isNPC: true
+       };
+       const newState = {
+         ...prev,
+         players: [...prev.players, newNPC],
+         chatHistory: [...prev.chatHistory, {
+            id: uuidv4(),
+            type: 'SYSTEM',
+            text: `${npcName} 加入了房间`,
+            playerId: 'SYSTEM',
+            playerName: 'System',
+            timestamp: Date.now()
+         } as ChatMessage]
+       };
+       sendMessage({ type: 'UPDATE_STATE', payload: newState });
+       return newState;
+    });
+  };
+
+  const skipTurn = () => {
+    if (!isHost) return;
+    // Skip works in Choosing or Drawing phase
+    if (gameState.phase === 'CHOOSING_WORD' || gameState.phase === 'DRAWING') {
+       endRound(gameState);
+    }
+  };
+
+  // Watch for NPC turns to auto-skip
+  useEffect(() => {
+    if (!isHost) return;
+    
+    if (gameState.phase === 'CHOOSING_WORD') {
+       const drawer = gameState.players.find(p => p.id === gameState.currentDrawerId);
+       if (drawer && drawer.isNPC) {
+          // Add a small delay so players see it's the bot's turn
+          const timer = setTimeout(() => {
+             // Bot "skips" or just doesn't play, triggering end of round effectively
+             // Or we can simulate a turn. Simplest is to skip.
+             endRound(gameState);
+          }, 2000);
+          return () => clearTimeout(timer);
+       }
+    }
+  }, [gameState.phase, gameState.currentDrawerId, isHost, gameState.players]);
+
+
   const startGameHost = () => {
     if (!isHost) return;
     setGameState(prev => ({
@@ -231,6 +297,7 @@ export default function App() {
 
   const nextTurn = (currentPlayers: Player[], roundNum: number) => {
     // Pick next drawer
+    // Simple random for now, could be round robin
     const drawer = currentPlayers[Math.floor(Math.random() * currentPlayers.length)];
     
     const words = [];
@@ -244,7 +311,7 @@ export default function App() {
       currentWord: '',
       currentWordHint: '',
       wordChoices: words,
-      timeLeft: 15,
+      timeLeft: 15, // Selection time
       drawingData: [],
       round: roundNum
     };
@@ -314,11 +381,15 @@ export default function App() {
     if (timerRef.current) clearInterval(timerRef.current);
     const isGameOver = currentState.round >= MAX_ROUNDS; 
 
+    // Calculate message based on phase
+    const isSkip = currentState.timeLeft > 0 && currentState.phase === 'CHOOSING_WORD'; // Rough heuristic for skip during choice
+    const msgText = isSkip ? "回合跳过 (NPC)" : `答案是: ${currentState.currentWord || '未知'}`;
+
     const newState: GameState = {
       ...currentState,
       phase: isGameOver ? 'GAME_END' : 'ROUND_END',
       timeLeft: 5,
-      currentWordHint: `答案是: ${currentState.currentWord}`,
+      currentWordHint: msgText,
       drawingData: [], // Clear canvas
       winnerId: isGameOver ? [...currentState.players].sort((a,b) => b.score - a.score)[0].id : null
     };
@@ -357,7 +428,6 @@ export default function App() {
       return;
     }
     
-    // Destroy previous instance
     if (peerRef.current) {
         peerRef.current.destroy();
     }
@@ -365,16 +435,21 @@ export default function App() {
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
     
-    // Use Config with STUN servers
-    const peer = new Peer(PEER_CONFIG); 
+    // Generate Short Code
+    const shortId = generateShortId();
+    const fullId = ROOM_ID_PREFIX + shortId;
+
+    // Use specific ID when creating Peer
+    const peer = new Peer(fullId, PEER_CONFIG); 
     
     peer.on('open', (id) => {
       setConnectionStatus('CONNECTED');
       setMyId(id); 
+      setDisplayRoomId(shortId); // Show short code to user
       
       setGameState({
         ...INITIAL_STATE,
-        roomId: id,
+        roomId: shortId, // Store short code in game state for display
         players: [{
           id: id,
           name: myName,
@@ -407,6 +482,11 @@ export default function App() {
 
     peer.on('error', (err) => {
         console.error("Peer Error", err);
+        // Retry with a new ID if taken
+        if (err.type === 'unavailable-id') {
+           setTimeout(() => createRoom(), 100);
+           return;
+        }
         setErrorMsg("网络错误: " + err.type);
         setConnectionStatus('DISCONNECTED');
     });
@@ -415,8 +495,8 @@ export default function App() {
   };
 
   const joinRoom = () => {
-    const targetRoomId = inputRoomId.trim();
-     if (!myName.trim() || !targetRoomId) {
+    const shortCode = inputRoomId.trim().toUpperCase();
+     if (!myName.trim() || !shortCode) {
       setErrorMsg("请输入昵称和房间号");
       return;
     }
@@ -441,20 +521,24 @@ export default function App() {
         });
     }, 10000); // 10s Timeout
 
-    // 2. Init Peer with STUN config
+    // 2. Init Peer (Random Client ID is fine)
     const peer = new Peer(PEER_CONFIG);
     
     peer.on('open', (id) => {
       setMyId(id); 
       
-      const conn = peer.connect(targetRoomId);
+      // Connect to the Full ID (Prefix + Short Code)
+      const targetFullId = ROOM_ID_PREFIX + shortCode;
+      console.log("Connecting to:", targetFullId);
+      
+      const conn = peer.connect(targetFullId);
       
       conn.on('open', () => {
-        // Success! Clear timeout
         if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
         
         setConnectionStatus('CONNECTED');
-        connectionsRef.current.set(targetRoomId, conn);
+        connectionsRef.current.set(targetFullId, conn);
+        setDisplayRoomId(shortCode); // Keep track of room we joined
         
         conn.send({
           type: 'JOIN',
@@ -462,7 +546,7 @@ export default function App() {
         });
       });
 
-      conn.on('data', (data) => handleData(data, targetRoomId));
+      conn.on('data', (data) => handleData(data, targetFullId));
       
       conn.on('close', () => {
         setConnectionStatus('DISCONNECTED');
@@ -483,7 +567,7 @@ export default function App() {
       
       let msg = "连接错误: " + err.type;
       if (err.type === 'peer-unavailable') {
-          msg = "找不到房间 ID: " + targetRoomId;
+          msg = `找不到房间: ${shortCode} (请确认房间号是否正确)`;
       }
       setErrorMsg(msg);
       setConnectionStatus('DISCONNECTED');
@@ -502,7 +586,11 @@ export default function App() {
     
     // Send to Host (if I am client)
     if (!isHost) {
-      sendMessage({ type: 'DRAW_ACTION', payload: path }, connectionsRef.current.get(gameState.roomId));
+      // Find host connection
+      // Client only stores one connection usually, but let's iterate to be safe or use known logic
+      // In joinRoom we keyed by targetFullId. But getting that key back is hard.
+      // Simpler: Client broadcasts to all open connections (which is just the host)
+      sendMessage({ type: 'DRAW_ACTION', payload: path });
     } else {
        // If I am host, I already updated state, now broadcast
        sendMessage({ type: 'DRAW_ACTION', payload: path });
@@ -515,7 +603,7 @@ export default function App() {
         setGameState(prev => ({...prev, drawingData: []}));
         sendMessage({ type: 'CLEAR_CANVAS', payload: null });
      } else {
-        sendMessage({ type: 'CLEAR_CANVAS', payload: null }, connectionsRef.current.get(gameState.roomId));
+        sendMessage({ type: 'CLEAR_CANVAS', payload: null });
      }
   };
 
@@ -526,13 +614,13 @@ export default function App() {
     if (isHost) {
       processChatMessage(chatInput, myId);
     } else {
-      sendMessage({ type: 'CHAT_MESSAGE', payload: chatInput }, connectionsRef.current.get(gameState.roomId));
+      sendMessage({ type: 'CHAT_MESSAGE', payload: chatInput });
     }
     setChatInput('');
   };
 
   const copyRoomId = () => {
-     navigator.clipboard.writeText(gameState.roomId);
+     navigator.clipboard.writeText(displayRoomId);
      alert("房间号已复制!");
   };
 
@@ -593,8 +681,9 @@ export default function App() {
                  <input 
                    value={inputRoomId}
                    onChange={e => setInputRoomId(e.target.value)}
-                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white font-mono"
-                   placeholder="输入房间 ID"
+                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white font-mono uppercase"
+                   placeholder="输入6位房间号"
+                   maxLength={6}
                  />
                  <button 
                    onClick={joinRoom}
@@ -639,7 +728,7 @@ export default function App() {
                <Users size={18}/> 玩家列表 ({gameState.players.length})
             </h2>
             <div className="text-xs text-slate-400 mt-1 flex items-center gap-1 cursor-pointer hover:text-blue-500" onClick={copyRoomId}>
-               ID: {gameState.roomId.slice(0,8)}... <Copy size={10}/>
+               ID: {displayRoomId} <Copy size={10}/>
             </div>
          </div>
          <div className="flex-1 overflow-y-auto p-2 space-y-2">
@@ -650,6 +739,7 @@ export default function App() {
                     <div className="flex items-center gap-1">
                        <span className="font-bold text-slate-800 truncate">{p.name}</span>
                        {p.isHost && <Crown size={12} className="text-yellow-500 fill-yellow-500"/>}
+                       {p.isNPC && <Bot size={12} className="text-blue-500"/>}
                     </div>
                     <div className="text-xs text-slate-500">得分: {p.score}</div>
                  </div>
@@ -659,7 +749,13 @@ export default function App() {
             ))}
          </div>
          {isHost && gameState.phase === 'LOBBY' && (
-           <div className="p-4 border-t border-slate-200">
+           <div className="p-4 border-t border-slate-200 space-y-2">
+              <button 
+                onClick={addNPC}
+                className="w-full bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2 rounded-xl transition-all flex items-center justify-center gap-2"
+              >
+                <Plus size={16}/> 添加机器人
+              </button>
               <button 
                 onClick={startGameHost}
                 disabled={gameState.players.length < 2}
@@ -691,12 +787,22 @@ export default function App() {
                {gameState.phase === 'LOBBY' && "等待开始..."}
                {gameState.phase === 'CHOOSING_WORD' && (isDrawer ? "请选择题目" : "画家正在选题...")}
                {gameState.phase === 'DRAWING' && (isDrawer ? `题目: ${gameState.currentWord}` : `提示: ${gameState.currentWordHint}`)}
-               {gameState.phase === 'ROUND_END' && `本轮结束! 答案: ${gameState.currentWord}`}
+               {gameState.phase === 'ROUND_END' && `本轮结束! ${gameState.currentWordHint}`}
                {gameState.phase === 'GAME_END' && "游戏结束!"}
             </div>
 
-            <div>
-               {/* Spacer or Settings */}
+            <div className="flex items-center gap-2">
+               {/* Skip Button for Host */}
+               {isHost && (gameState.phase === 'CHOOSING_WORD' || gameState.phase === 'DRAWING') && (
+                 <button 
+                   onClick={skipTurn} 
+                   className="flex items-center gap-1 bg-amber-100 text-amber-600 hover:bg-amber-200 px-3 py-1 rounded-lg text-sm font-bold transition-colors"
+                   title="跳过当前回合"
+                 >
+                    <FastForward size={16}/> 跳过
+                 </button>
+               )}
+               {/* Restart Button */}
                {isHost && gameState.phase !== 'LOBBY' && (
                  <button onClick={() => sendMessage({ type: 'RESTART', payload: null })} className="text-xs text-red-500 hover:underline">重置游戏</button>
                )}
@@ -713,8 +819,14 @@ export default function App() {
                   <p>邀请好友输入房间号加入游戏</p>
                   <div className="mt-8 p-4 bg-white rounded-xl border border-dashed border-slate-300 inline-block cursor-pointer hover:border-blue-500" onClick={copyRoomId}>
                      <div className="text-xs text-slate-400 mb-1">房间 ID (点击复制)</div>
-                     <div className="font-mono text-xl font-bold text-blue-600">{gameState.roomId}</div>
+                     <div className="font-mono text-xl font-bold text-blue-600">{displayRoomId}</div>
                   </div>
+                  
+                  {isHost && gameState.players.length < 2 && (
+                     <div className="mt-4 text-orange-400 text-sm flex items-center justify-center gap-1">
+                        <AlertCircle size={14} /> 需要至少2人开始游戏 (可添加机器人)
+                     </div>
+                  )}
                </div>
             ) : gameState.phase === 'GAME_END' ? (
                <div className="text-center animate-in zoom-in duration-500">
@@ -730,20 +842,27 @@ export default function App() {
                   )}
                </div>
             ) : gameState.phase === 'CHOOSING_WORD' && isDrawer ? (
-               <div className="grid grid-cols-3 gap-4 w-full max-w-2xl">
-                  {gameState.wordChoices.map(word => (
-                     <button
-                       key={word}
-                       onClick={() => {
-                          if (isHost) startRound(word);
-                          else sendMessage({ type: 'CHOOSE_WORD', payload: word }, connectionsRef.current.get(gameState.roomId));
-                       }}
-                       className="h-32 bg-white rounded-2xl shadow-lg border-2 border-slate-200 hover:border-blue-500 hover:scale-105 transition-all flex items-center justify-center text-2xl font-bold text-slate-700"
-                     >
-                        {word}
-                     </button>
-                  ))}
-               </div>
+               gameState.players.find(p => p.id === myId)?.isNPC ? (
+                  <div className="text-2xl text-slate-500 flex flex-col items-center">
+                     <Bot size={48} className="mb-2"/>
+                     机器人正在思考...
+                  </div>
+               ) : (
+                  <div className="grid grid-cols-3 gap-4 w-full max-w-2xl">
+                     {gameState.wordChoices.map(word => (
+                        <button
+                          key={word}
+                          onClick={() => {
+                             if (isHost) startRound(word);
+                             else sendMessage({ type: 'CHOOSE_WORD', payload: word }, connectionsRef.current.get(gameState.roomId));
+                          }}
+                          className="h-32 bg-white rounded-2xl shadow-lg border-2 border-slate-200 hover:border-blue-500 hover:scale-105 transition-all flex items-center justify-center text-2xl font-bold text-slate-700"
+                        >
+                           {word}
+                        </button>
+                     ))}
+                  </div>
+               )
             ) : (
                <GameCanvas 
                   paths={gameState.drawingData}

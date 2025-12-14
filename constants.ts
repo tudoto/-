@@ -1,5 +1,8 @@
 import { HandType } from './types';
 
+// Prefix to ensure unique namespace on public PeerJS server
+export const ROOM_ID_PREFIX = 'draw-guess-v1-';
+
 export const WORD_LIST = [
   "苹果", "香蕉", "西瓜", "电脑", "手机", "鼠标", "键盘", "耳机", "眼镜", "手表",
   "汽车", "自行车", "飞机", "火车", "轮船", "火箭", "太阳", "月亮", "星星", "云朵",
