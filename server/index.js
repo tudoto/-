@@ -5,6 +5,11 @@ const http = require('http');
 const app = express();
 const server = http.createServer(app);
 
+app.use(cors({
+  origin: '*', // 调试时允许所有，正式上线可以改为你的 Vercel 域名
+  methods: ['GET', 'POST']
+}));
+
 // Use the PORT environment variable provided by Render, or default to 9000
 const port = process.env.PORT || 9000;
 
