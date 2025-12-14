@@ -1,6 +1,7 @@
 const express = require('express');
 const { ExpressPeerServer } = require('peer');
 const http = require('http');
+const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
