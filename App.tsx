@@ -46,16 +46,11 @@ export default function App() {
   const isDrawer = gameState.currentDrawerId === myId;
   const myPlayer = gameState.players.find(p => p.id === myId);
 
-  // --- AUDIO ---
-  const playSound = (type: 'msg' | 'correct' | 'turn') => {
-    // Placeholder for sound effects
-  };
-
   // --- NETWORK HELPERS ---
 
   const sendMessage = useCallback((msg: NetworkMessage, targetConn?: DataConnection) => {
     if (targetConn) {
-      targetConn.send(msg);
+      if (targetConn.open) targetConn.send(msg);
     } else {
       // Broadcast to all connected peers
       connectionsRef.current.forEach(conn => {
@@ -74,17 +69,12 @@ export default function App() {
         
       case 'DRAW_ACTION':
         // If Host receives draw, update state and broadcast
-        // If Client receives draw, it comes via UPDATE_STATE or specialized broadcast
-        // For efficiency, Client->Host->Clients.
         if (isHost) {
           setGameState(prev => {
             const newState = {
                ...prev,
                drawingData: [...prev.drawingData, msg.payload]
             };
-            // Broadcast immediate draw event to others to avoid full state payload lag
-            // Actually for simplicity in React, let's just stick to state updates or optimized events
-            // We will optimize: Host applies to state, then broadcasts state (or delta)
             sendMessage({ type: 'UPDATE_STATE', payload: newState });
             return newState;
           });
@@ -142,10 +132,6 @@ export default function App() {
         }
         break;
         
-      case 'START_GAME':
-        // Triggered by host UI, but received by network? No, Host drives logic directly.
-        break;
-
       case 'CHOOSE_WORD':
         if (isHost && gameState.phase === 'CHOOSING_WORD') {
            startRound(msg.payload);
@@ -158,7 +144,7 @@ export default function App() {
          }
          break;
     }
-  }, [isHost, gameState.phase, sendMessage]); // Dependencies will be handled by ref or careful state usage
+  }, [isHost, gameState.phase, sendMessage]); 
 
   // --- HOST GAME LOGIC ---
 
@@ -200,7 +186,7 @@ export default function App() {
         
         // Check if all guessers have guessed
         const guessers = updatedPlayers.filter(p => p.id !== prev.currentDrawerId && p.isConnected);
-        const allGuessed = guessers.every(p => p.hasGuessedCorrectly);
+        const allGuessed = guessers.length > 0 && guessers.every(p => p.hasGuessedCorrectly);
         
         if (allGuessed) {
            setTimeout(() => endRound(newState), 1000);
@@ -244,20 +230,6 @@ export default function App() {
 
   const nextTurn = (currentPlayers: Player[], roundNum: number) => {
     // Pick next drawer
-    // Simple rotation logic: Index based on round? 
-    // Let's just pick random or sequential. Sequential is better.
-    // For MVP, random from those who haven't drawn this round? 
-    // Easier: Just rotate through the list.
-    
-    // We need to track who has drawn this full game loop? 
-    // Let's simplify: A "Round" consists of everyone drawing once.
-    
-    // Find first player who hasn't been drawer this round cycle? 
-    // State doesn't track "hasDrawnThisRound".
-    // Let's just pick random for simplicity or rely on `round` as global counter.
-    
-    // Actually, "Round 1" usually means everyone goes once.
-    // Let's just simply pick a random player for demo purposes to avoid complex queue logic.
     const drawer = currentPlayers[Math.floor(Math.random() * currentPlayers.length)];
     
     const words = [];
@@ -284,22 +256,12 @@ export default function App() {
     timerRef.current = setInterval(() => {
        setGameState(prev => {
          if (prev.timeLeft <= 1) {
-           // Auto pick
            if (prev.phase === 'CHOOSING_WORD') {
-             // Cannot call startRound directly here due to closure staleness, handled via effect or force ref?
-             // We'll handle via effect or just auto-select via logic
-             // Ideally we force an action.
              clearInterval(timerRef.current!);
-             // We need to trigger the next phase.
-             // This is tricky inside interval. 
-             // Workaround: We rely on the HOST component to observe time and trigger change.
              return prev; 
            }
          }
          const t = prev.timeLeft - 1;
-         // Optimization: Don't broadcast every second, maybe every 5? 
-         // For smooth UI, clients can run their own countdown synced on phase change.
-         // But for sync, let's broadcast.
          sendMessage({ type: 'UPDATE_STATE', payload: { ...prev, timeLeft: t } });
          return { ...prev, timeLeft: t };
        });
@@ -349,11 +311,7 @@ export default function App() {
 
   const endRound = (currentState: GameState) => {
     if (timerRef.current) clearInterval(timerRef.current);
-    
-    // Check if game over (Max Rounds reached? Simplified: just endless or 3 fixed rounds)
-    // Actually `round` should increment every turn? No, usually Round = All Players Turn.
-    // For demo, let's just do 5 turns then Game Over.
-    const isGameOver = currentState.round >= 5; 
+    const isGameOver = currentState.round >= MAX_ROUNDS; 
 
     const newState: GameState = {
       ...currentState,
@@ -383,9 +341,7 @@ export default function App() {
   // --- INITIALIZATION ---
 
   useEffect(() => {
-    // Generate my ID
-    const id = uuidv4();
-    setMyId(id);
+    // Set a default random avatar
     setMyAvatar(AVATARS[Math.floor(Math.random() * AVATARS.length)]);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -399,19 +355,27 @@ export default function App() {
       return;
     }
     
+    // Destroy previous instance if exists to prevent 'unavailable id'
+    if (peerRef.current) {
+        peerRef.current.destroy();
+    }
+    
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
     
-    const peer = new Peer(myId); // Use my UUID as Peer ID for simplicity
+    // Let PeerJS assign a random ID. Do not pass myId.
+    const peer = new Peer(); 
     
     peer.on('open', (id) => {
       setConnectionStatus('CONNECTED');
-      // Initialize Host State
+      setMyId(id); // Capture the assigned ID
+      
+      // Initialize Host State with the assigned ID
       setGameState({
         ...INITIAL_STATE,
         roomId: id,
         players: [{
-          id: myId,
+          id: id,
           name: myName,
           avatar: myAvatar,
           score: 0,
@@ -426,11 +390,7 @@ export default function App() {
       conn.on('data', (data) => handleData(data, conn.peer));
       conn.on('open', () => {
         connectionsRef.current.set(conn.peer, conn);
-        // Send current state to new joiner immediately
-        conn.send({ type: 'UPDATE_STATE', payload: gameState }); // Relying on closure state, might be stale? 
-        // In refs, we should probably store state in ref for networking callbacks or use functional updates.
-        // For now, let's hope React scheduler catches up, or the next broadcast fixes it.
-        // Better:
+        // Important: Use function update to get latest state inside callback
         setGameState(current => {
            conn.send({ type: 'UPDATE_STATE', payload: current });
            return current;
@@ -453,22 +413,30 @@ export default function App() {
       setErrorMsg("请输入昵称和房间号");
       return;
     }
+    
+    if (peerRef.current) {
+        peerRef.current.destroy();
+    }
+
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
 
-    const peer = new Peer(myId);
+    // Let PeerJS assign a random ID
+    const peer = new Peer();
     
-    peer.on('open', () => {
+    peer.on('open', (id) => {
+      setMyId(id); // Capture assigned ID
+      
       const conn = peer.connect(inputRoomId);
       
       conn.on('open', () => {
         setConnectionStatus('CONNECTED');
         connectionsRef.current.set(inputRoomId, conn);
         
-        // Send Join Request
+        // Send Join Request with my new assigned ID
         conn.send({
           type: 'JOIN',
-          payload: { id: myId, name: myName, avatar: myAvatar }
+          payload: { id: id, name: myName, avatar: myAvatar }
         });
       });
 
@@ -534,7 +502,7 @@ export default function App() {
   };
 
   const copyRoomId = () => {
-     navigator.clipboard.writeText(gameState.roomId || myId);
+     navigator.clipboard.writeText(gameState.roomId);
      alert("房间号已复制!");
   };
 
