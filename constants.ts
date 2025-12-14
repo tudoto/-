@@ -7,7 +7,7 @@ export const ROOM_ID_PREFIX = 'draw-guess-v1-';
 // 1. Deploy the 'server' folder to Render.
 // 2. Paste your Render URL below (e.g., 'https://my-app.onrender.com')
 // 3. If empty, it falls back to the public PeerJS server (unstable for production).
-export const CUSTOM_BACKEND_URL = ''; 
+export const CUSTOM_BACKEND_URL = 'https://4z76jqzc0c.onrender.com'; 
 
 // Helper to parse the URL for PeerJS config
 const getPeerConfig = () => {
