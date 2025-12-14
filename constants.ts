@@ -1,7 +1,49 @@
 import { HandType } from './types';
 
-// Prefix to ensure unique namespace on public PeerJS server
+// Prefix to ensure unique namespace
 export const ROOM_ID_PREFIX = 'draw-guess-v1-';
+
+// --- BACKEND CONFIGURATION ---
+// 1. Deploy the 'server' folder to Render.
+// 2. Paste your Render URL below (e.g., 'https://my-app.onrender.com')
+// 3. If empty, it falls back to the public PeerJS server (unstable for production).
+export const CUSTOM_BACKEND_URL = ''; 
+
+// Helper to parse the URL for PeerJS config
+const getPeerConfig = () => {
+  const baseConfig = {
+    debug: 2, // 1=Warnings, 2=Errors, 3=All
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        { urls: 'stun:stun.stunprotocol.org:3478' },
+        { urls: 'stun:stun.sipgate.net:3478' }
+      ]
+    }
+  };
+
+  if (CUSTOM_BACKEND_URL) {
+    try {
+      const url = new URL(CUSTOM_BACKEND_URL);
+      return {
+        ...baseConfig,
+        host: url.hostname,
+        port: url.port ? parseInt(url.port) : 443,
+        path: '/peerjs/myapp', // Must match server/index.js configuration
+        secure: url.protocol === 'https:',
+      };
+    } catch (e) {
+      console.error("Invalid CUSTOM_BACKEND_URL", e);
+      return baseConfig;
+    }
+  }
+
+  return baseConfig;
+};
+
+export const PEER_CONFIG = getPeerConfig();
+
 
 export const WORD_LIST = [
   "苹果", "香蕉", "西瓜", "电脑", "手机", "鼠标", "键盘", "耳机", "眼镜", "手表",
@@ -30,16 +72,6 @@ export const AVATARS = ["🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", 
 
 export const ROUND_TIME = 60; // Seconds
 export const MAX_ROUNDS = 3;
-
-// PeerJS Configuration with STUN servers for better NAT traversal
-export const PEER_CONFIG = {
-  config: {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' }
-    ]
-  }
-};
 
 export const HAND_BASE_SCORES: Record<HandType, { chips: number, mult: number }> = {
   [HandType.HighCard]: { chips: 5, mult: 1 },

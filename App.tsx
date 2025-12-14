@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import Peer, { DataConnection } from 'peerjs';
+import Peer, { DataConnection, PeerOptions } from 'peerjs';
 import { v4 as uuidv4 } from 'uuid';
 import { GameState, Player, ChatMessage, GamePhase, NetworkMessage, DrawPath } from './types';
 import { WORD_LIST, AVATARS, ROUND_TIME, MAX_ROUNDS, PEER_CONFIG, ROOM_ID_PREFIX } from './constants';
 import GameCanvas from './components/GameCanvas';
-import { Users, Send, Copy, Crown, Timer, AlertCircle, Play, LogOut, CheckCircle2, Bot, FastForward, Plus } from 'lucide-react';
+import { Users, Send, Copy, Crown, Timer, AlertCircle, Play, LogOut, CheckCircle2, Bot, FastForward, Plus, X } from 'lucide-react';
 
 // --- INITIAL STATE ---
 const INITIAL_STATE: GameState = {
@@ -412,13 +412,21 @@ export default function App() {
 
   // --- INITIALIZATION ---
 
+  const cleanupPeer = () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+      if (peerRef.current) {
+          peerRef.current.destroy();
+          peerRef.current = null;
+      }
+      setConnectionStatus('DISCONNECTED');
+  };
+
   useEffect(() => {
     // Set a default random avatar
     setMyAvatar(AVATARS[Math.floor(Math.random() * AVATARS.length)]);
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-      if (peerRef.current) peerRef.current.destroy();
+      cleanupPeer();
     };
   }, []);
 
@@ -428,9 +436,8 @@ export default function App() {
       return;
     }
     
-    if (peerRef.current) {
-        peerRef.current.destroy();
-    }
+    // Cleanup first
+    cleanupPeer();
     
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
@@ -440,7 +447,8 @@ export default function App() {
     const fullId = ROOM_ID_PREFIX + shortId;
 
     // Use specific ID when creating Peer
-    const peer = new Peer(fullId, PEER_CONFIG); 
+    // Note: PEER_CONFIG is now a dynamic object potentially containing host/port/key
+    const peer = new Peer(fullId, PEER_CONFIG as PeerOptions); 
     
     peer.on('open', (id) => {
       setConnectionStatus('CONNECTED');
@@ -484,10 +492,11 @@ export default function App() {
         console.error("Peer Error", err);
         // Retry with a new ID if taken
         if (err.type === 'unavailable-id') {
-           setTimeout(() => createRoom(), 100);
+           peer.destroy();
+           setTimeout(() => createRoom(), 200);
            return;
         }
-        setErrorMsg("网络错误: " + err.type);
+        setErrorMsg("创建失败: " + err.type);
         setConnectionStatus('DISCONNECTED');
     });
     
@@ -501,9 +510,8 @@ export default function App() {
       return;
     }
     
-    if (peerRef.current) {
-        peerRef.current.destroy();
-    }
+    // Cleanup first
+    cleanupPeer();
 
     setErrorMsg('');
     setConnectionStatus('CONNECTING');
@@ -514,15 +522,15 @@ export default function App() {
         setConnectionStatus(prev => {
             if (prev === 'CONNECTING') {
                 if (peerRef.current) peerRef.current.destroy();
-                setErrorMsg("连接超时。请检查房间号是否正确，或由于网络原因无法连接主机。");
+                setErrorMsg("连接超时。请检查房间号是否正确，或网络无法连接主机。");
                 return 'DISCONNECTED';
             }
             return prev;
         });
-    }, 10000); // 10s Timeout
+    }, 12000); // 12s Timeout
 
     // 2. Init Peer (Random Client ID is fine)
-    const peer = new Peer(PEER_CONFIG);
+    const peer = new Peer(PEER_CONFIG as PeerOptions);
     
     peer.on('open', (id) => {
       setMyId(id); 
@@ -531,8 +539,17 @@ export default function App() {
       const targetFullId = ROOM_ID_PREFIX + shortCode;
       console.log("Connecting to:", targetFullId);
       
-      const conn = peer.connect(targetFullId);
+      const conn = peer.connect(targetFullId, {
+        reliable: true,
+        serialization: 'json'
+      });
       
+      if (!conn) {
+          setErrorMsg("无法建立连接对象");
+          setConnectionStatus('DISCONNECTED');
+          return;
+      }
+
       conn.on('open', () => {
         if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
         
@@ -556,7 +573,7 @@ export default function App() {
       conn.on('error', (err) => {
          console.error("Connection Error", err);
          if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-         setErrorMsg("连接失败");
+         setErrorMsg("连接异常中断");
          setConnectionStatus('DISCONNECTED');
       });
     });
@@ -568,12 +585,19 @@ export default function App() {
       let msg = "连接错误: " + err.type;
       if (err.type === 'peer-unavailable') {
           msg = `找不到房间: ${shortCode} (请确认房间号是否正确)`;
+      } else if (err.type === 'network') {
+          msg = "网络连接错误 (请检查防火墙/VPN)";
       }
       setErrorMsg(msg);
       setConnectionStatus('DISCONNECTED');
     });
 
     peerRef.current = peer;
+  };
+
+  const cancelConnection = () => {
+      cleanupPeer();
+      setErrorMsg('');
   };
 
   // --- UI HANDLERS ---
@@ -706,11 +730,18 @@ export default function App() {
 
   if (connectionStatus === 'CONNECTING') {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white relative">
+         <button 
+           onClick={cancelConnection}
+           className="absolute top-8 right-8 text-slate-400 hover:text-white transition-colors"
+         >
+           <X size={32} />
+         </button>
          <div className="animate-pulse flex flex-col items-center">
             <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
             <p className="text-xl">连接中...</p>
             <p className="text-sm text-slate-400 mt-2">首次连接可能需要几秒钟建立通道</p>
+            <p className="text-xs text-slate-500 mt-1">若长时间无响应请取消重试</p>
          </div>
       </div>
     );
