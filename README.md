@@ -18,3 +18,4 @@ View your app in AI Studio: https://ai.studio/apps/drive/1hniZYwl7W3vM7UpucZis8O
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+4. go to dun-five.vercel.app to start the game
