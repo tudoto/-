@@ -12,16 +12,15 @@ export const CUSTOM_BACKEND_URL = 'https://4z76jqzc0c.onrender.com';
 // Helper to parse the URL for PeerJS config
 const getPeerConfig = () => {
   const baseConfig = {
-    debug: 2, // 1=Warnings, 2=Errors, 3=All
-    config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' },
-        { urls: 'stun:stun.stunprotocol.org:3478' },
-        { urls: 'stun:stun.sipgate.net:3478' }
-      ]
-    }
-  };
+  debug: 2,
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.qq.com:3478' },      // 腾讯
+      { urls: 'stun:stun.miwifi.com:3478' },  // 小米
+      { urls: 'stun:stun.l.google.com:19302' } // 保留 Google 作为备选
+    ]
+  }
+};
 
   if (CUSTOM_BACKEND_URL) {
     try {
