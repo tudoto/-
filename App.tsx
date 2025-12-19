@@ -527,7 +527,7 @@ export default function App() {
             }
             return prev;
         });
-    }, 12000); // 12s Timeout
+    }, 45000); // 45s Timeout
 
     // 2. Init Peer (Random Client ID is fine)
     const peer = new Peer(PEER_CONFIG as PeerOptions);
